@@ -247,6 +247,12 @@ class FesteringScythe extends Analyzer {
         position={STATISTIC_ORDER.OPTIONAL(14)}
         size="flexible"
         category={STATISTIC_CATEGORY.TALENTS}
+        dropdown={
+          <div style={{ padding: '8px' }}>
+            {this.renderLegend()}
+            <PerformanceBoxRow values={this.entries} />
+          </div>
+        }
       >
         <BoringSpellValueText spell={DK_SPELLS.FESTERING_SCYTHE_BUFF}>
           <div>
@@ -260,11 +266,6 @@ class FesteringScythe extends Analyzer {
             {this.droppedApplications} <small>buff drops</small>
           </div>
         </BoringSpellValueText>
-
-        <div style={{ padding: '8px' }}>
-          {this.renderLegend()}
-          <PerformanceBoxRow values={this.entries} />
-        </div>
       </Statistic>
     );
   }
