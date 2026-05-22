@@ -1,11 +1,14 @@
 import { formatPercentage } from 'common/format';
 import SPELLS from 'common/SPELLS';
+import { SpellLink } from 'interface';
+import { explanationAndDataSubsection } from 'interface/guide/components/ExplanationRow';
 import UptimeIcon from 'interface/icons/Uptime';
 import Analyzer from 'parser/core/Analyzer';
 import Enemies from 'parser/shared/modules/Enemies';
 import BoringSpellValueText from 'parser/ui/BoringSpellValueText';
 import Statistic from 'parser/ui/Statistic';
 import STATISTIC_ORDER from 'parser/ui/STATISTIC_ORDER';
+import type { JSX } from 'react';
 
 class PlagueEfficiency extends Analyzer {
   static dependencies = {
@@ -20,6 +23,41 @@ class PlagueEfficiency extends Analyzer {
 
   get dreadPlagueUptime() {
     return this.enemies.getBuffUptime(SPELLS.DREAD_PLAGUE.id) / this.owner.fightDuration;
+  }
+
+  get guideSubsection(): JSX.Element {
+    const explanation = (
+      <p>
+        Keep <SpellLink spell={SPELLS.VIRULENT_PLAGUE} /> and{' '}
+        <SpellLink spell={SPELLS.DREAD_PLAGUE} /> active for as much of the fight as possible. High
+        disease uptime is a core part of Unholy pressure and smooth target maintenance.
+      </p>
+    );
+
+    const data = (
+      <div>
+        <div style={{ marginBottom: '6px' }}>
+          <strong>Disease uptime</strong>
+        </div>
+        <p style={{ margin: '0 0 8px 0' }}>Keep both diseases rolling with minimal gaps.</p>
+        <div style={{ marginBottom: '8px' }}>
+          <div>
+            <UptimeIcon /> <strong>{formatPercentage(this.virulentPlagueUptime)}%</strong>{' '}
+            <small>
+              <SpellLink spell={SPELLS.VIRULENT_PLAGUE} />
+            </small>
+          </div>
+          <div>
+            <UptimeIcon /> <strong>{formatPercentage(this.dreadPlagueUptime)}%</strong>{' '}
+            <small>
+              <SpellLink spell={SPELLS.DREAD_PLAGUE} />
+            </small>
+          </div>
+        </div>
+      </div>
+    );
+
+    return explanationAndDataSubsection(explanation, data, 40);
   }
 
   statistic() {

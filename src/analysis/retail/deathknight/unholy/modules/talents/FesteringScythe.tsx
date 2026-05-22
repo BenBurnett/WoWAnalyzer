@@ -1,6 +1,8 @@
 import { formatPercentage } from 'common/format';
 import DK_SPELLS from 'common/SPELLS/deathknight';
 import TALENTS from 'common/TALENTS/deathknight';
+import { SpellLink } from 'interface';
+import { explanationAndDataSubsection } from 'interface/guide/components/ExplanationRow';
 import { BoxRowEntry, PerformanceBoxRow } from 'interface/guide/components/PerformanceBoxRow';
 import Analyzer, { Options, SELECTED_PLAYER } from 'parser/core/Analyzer';
 import Events, { ApplyBuffEvent, RefreshBuffEvent, RemoveBuffEvent } from 'parser/core/Events';
@@ -9,7 +11,7 @@ import BoringSpellValueText from 'parser/ui/BoringSpellValueText';
 import Statistic from 'parser/ui/Statistic';
 import STATISTIC_CATEGORY from 'parser/ui/STATISTIC_CATEGORY';
 import STATISTIC_ORDER from 'parser/ui/STATISTIC_ORDER';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, JSX, ReactNode } from 'react';
 
 const FESTERING_SCYTHE_BUFF_DURATION = 25_000;
 const PERFECT_REFRESH_WINDOW = 3_000;
@@ -87,9 +89,11 @@ class FesteringScythe extends Analyzer {
     this.addEntry(
       QualitativePerformance.Fail,
       <>
-        Applied @ {this.owner.formatTimestamp(event.timestamp)} after the buff fell off (
-        {this.formatSeconds(missingMs)}s missing). Lesser Ghoul stacks before Scythe:{' '}
-        {lesserGhoulStacks}.
+        <p style={{ margin: 0 }}>
+          Applied @ {this.owner.formatTimestamp(event.timestamp)} after the buff fell off (
+          {this.formatSeconds(missingMs)}s missing).
+        </p>
+        <p style={{ margin: 0 }}>Lesser Ghoul stacks before Scythe: {lesserGhoulStacks}.</p>
       </>,
     );
   }
@@ -107,9 +111,11 @@ class FesteringScythe extends Analyzer {
     this.addEntry(
       value,
       <>
-        Refreshed @ {this.owner.formatTimestamp(event.timestamp)} with{' '}
-        {this.formatSeconds(remainingMs)}s remaining. Lesser Ghoul stacks before Scythe:{' '}
-        {lesserGhoulStacks}.
+        <p style={{ margin: 0 }}>
+          Refreshed @ {this.owner.formatTimestamp(event.timestamp)} with{' '}
+          {this.formatSeconds(remainingMs)}s remaining.
+        </p>
+        <p style={{ margin: 0 }}>Lesser Ghoul stacks before Scythe: {lesserGhoulStacks}.</p>
       </>,
     );
   }
@@ -172,6 +178,69 @@ class FesteringScythe extends Analyzer {
     return this.selectedCombatant.getBuffUptime(this.buffSpellId) / this.owner.fightDuration;
   }
 
+  private renderLegend() {
+    return (
+      <small style={{ display: 'grid', gap: '2px', marginBottom: '6px' }}>
+        {LEGEND_ENTRIES.map((entry) => (
+          <span key={entry.text}>
+            <span style={entry.dotStyle} />
+            {entry.text}
+          </span>
+        ))}
+      </small>
+    );
+  }
+
+  get guideSubsection(): JSX.Element {
+    const explanation = (
+      <>
+        <p>
+          <strong>
+            <SpellLink spell={DK_SPELLS.FESTERING_SCYTHE_BUFF} />
+          </strong>{' '}
+          is a high-value buff you want active for as much of the fight as possible. It hastens your
+          diseases, which increases <SpellLink spell={TALENTS.SUDDEN_DOOM_TALENT} /> proc
+          generation.
+        </p>
+        <p>
+          Aim to maximize uptime while still refreshing efficiently: late refreshes are better than
+          early ones, and the best refreshes are in the final seconds of the buff (or when your
+          Lesser Ghoul stack condition is met).
+        </p>
+      </>
+    );
+
+    const data = (
+      <div>
+        <div style={{ marginBottom: '6px' }}>
+          <strong>
+            <SpellLink spell={DK_SPELLS.FESTERING_SCYTHE} /> casts
+          </strong>
+        </div>
+        <div style={{ marginBottom: '8px' }}>
+          <div>
+            <strong>{formatPercentage(this.uptime, 1)}%</strong> <small>uptime</small>
+          </div>
+          <div>
+            <strong>{formatPercentage(this.goodOrPerfectRefreshRate, 0)}%</strong>{' '}
+            <small>good+perfect refreshes</small>
+          </div>
+          <div>
+            <strong>{this.droppedApplications}</strong> <small>buff drops</small>
+          </div>
+        </div>
+        <small>
+          Target high uptime and prioritize good/perfect refreshes over early refreshes. Mouseover
+          boxes for exact timing and stacks.
+        </small>
+        {this.renderLegend()}
+        <PerformanceBoxRow values={this.entries} />
+      </div>
+    );
+
+    return explanationAndDataSubsection(explanation, data, 40);
+  }
+
   statistic() {
     return (
       <Statistic
@@ -193,14 +262,7 @@ class FesteringScythe extends Analyzer {
         </BoringSpellValueText>
 
         <div style={{ padding: '8px' }}>
-          <small style={{ display: 'grid', gap: '2px', marginBottom: '6px' }}>
-            {LEGEND_ENTRIES.map((entry) => (
-              <span key={entry.text}>
-                <span style={entry.dotStyle} />
-                {entry.text}
-              </span>
-            ))}
-          </small>
+          {this.renderLegend()}
           <PerformanceBoxRow values={this.entries} />
         </div>
       </Statistic>
