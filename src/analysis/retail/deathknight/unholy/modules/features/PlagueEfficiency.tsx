@@ -76,9 +76,9 @@ class PlagueEfficiency extends Analyzer {
         </p>
         <p>
           With <SpellLink spell={TALENTS.FORBIDDEN_KNOWLEDGE_3_UNHOLY_TALENT} />,{' '}
-          <SpellLink spell={SPELLS.DREAD_PLAGUE} /> can rouse additional lesser ghouls to{' '}
-          <SpellLink spell={TALENTS.PUTREFY_TALENT} />. With{' '}
-          <SpellLink spell={TALENTS.SUDDEN_DOOM_TALENT} />, keeping{' '}
+          <SpellLink spell={SPELLS.DREAD_PLAGUE} /> can rouse additional{' '}
+          <SpellLink spell={SPELLS.LESSER_GHOUL} />s to <SpellLink spell={TALENTS.PUTREFY_TALENT} />
+          . With <SpellLink spell={TALENTS.SUDDEN_DOOM_TALENT} />, keeping{' '}
           <SpellLink spell={SPELLS.DREAD_PLAGUE} /> active also sustains that proc engine.
         </p>
       </>

@@ -107,17 +107,36 @@ class Putrefy extends Analyzer.withDependencies({
     return [
       {
         color: '#22c55e',
-        label: 'During Dark Transformation',
+        label: (
+          <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF}>
+            During Dark Transformation
+          </SpellLink>
+        ),
         value: this.chargesSpentDuringDarkTransformation,
         valuePercent: false,
-        valueTooltip: `${this.chargesSpentDuringDarkTransformation} Putrefy charges spent during Dark Transformation`,
+        valueTooltip: (
+          <>
+            {this.chargesSpentDuringDarkTransformation} <SpellLink spell={TALENTS.PUTREFY_TALENT} />{' '}
+            charges spent during <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />
+          </>
+        ),
       },
       {
         color: '#ef4444',
-        label: 'Outside Dark Transformation',
+        label: (
+          <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF}>
+            Outside Dark Transformation
+          </SpellLink>
+        ),
         value: this.chargesSpentOutsideDarkTransformation,
         valuePercent: false,
-        valueTooltip: `${this.chargesSpentOutsideDarkTransformation} Putrefy charges spent outside Dark Transformation`,
+        valueTooltip: (
+          <>
+            {this.chargesSpentOutsideDarkTransformation}{' '}
+            <SpellLink spell={TALENTS.PUTREFY_TALENT} /> charges spent outside{' '}
+            <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />
+          </>
+        ),
       },
     ];
   }
@@ -129,8 +148,9 @@ class Putrefy extends Analyzer.withDependencies({
           <SpellLink spell={TALENTS.PUTREFY_TALENT} />
         </strong>{' '}
         should only be used during <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />.
-        Spending charges outside this window is a damage loss, so your goal is 100% Putrefy usage
-        during Dark Transformation.
+        Spending charges outside this window is a damage loss, so your goal is 100%{' '}
+        <SpellLink spell={TALENTS.PUTREFY_TALENT} /> usage during{' '}
+        <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />.
       </p>
     );
 
@@ -144,7 +164,10 @@ class Putrefy extends Analyzer.withDependencies({
         <div style={{ marginBottom: '8px' }}>
           <strong>{formatPercentage(this.efficiency, 0)}%</strong> <small>efficiency</small>
         </div>
-        <p style={{ margin: '0 0 8px 0' }}>Only use Putrefy charges during Dark Transformation.</p>
+        <p style={{ margin: '0 0 8px 0' }}>
+          Only use <SpellLink spell={TALENTS.PUTREFY_TALENT} /> charges during{' '}
+          <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />.
+        </p>
         <small style={{ display: 'grid', gap: '2px', marginBottom: '6px' }}>
           <span>
             <span

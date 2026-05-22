@@ -65,8 +65,8 @@ export default function Guide({ modules, info }: GuideProps<typeof CombatLogPars
             <p>
               For optimal efficiency, avoid overcapping on Runic Power. You should aim to spend it
               regularly to keep your Rune regeneration flowing. Short spikes are normal, but staying
-              near the cap for extended periods usually means missed Death Coils or inefficient GCD
-              usage.
+              near the cap for extended periods usually means missed{' '}
+              <SpellLink spell={SPELLS.DEATH_COIL} /> casts or inefficient GCD usage.
             </p>
           </div>
 

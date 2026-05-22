@@ -1,4 +1,3 @@
-import { formatDuration, formatPercentage } from 'common/format';
 import SPELLS from 'common/SPELLS';
 import TALENTS from 'common/TALENTS/deathknight';
 import { SpellLink } from 'interface';
@@ -28,6 +27,10 @@ import type { JSX } from 'react';
 const SOUL_REAPER_EXECUTE_THRESHOLD = 0.35;
 const SOUL_REAPER_COOLDOWN_MS = 15_000;
 const SOUL_REAPER_NEXT_DT_BAD_WINDOW_MS = 15_000;
+const ATTRIBUTED_PLAYER_DAMAGE_SPELL_IDS = new Set([
+  SPELLS.DREAD_PLAGUE.id,
+  SPELLS.VIRULENT_PLAGUE.id,
+]);
 
 interface SoulReaperCastRecord {
   timestamp: number;
@@ -151,13 +154,12 @@ class SoulReaper extends ExecuteHelper {
   }
 
   private onDTApply(_event: ApplyBuffEvent) {
+    const darkTransformationWindowId = this.darkTransformationWindowIdCounter + 1;
+
     this.darkTransformationActive = true;
-    this.darkTransformationWindowIdCounter += 1;
-    this.currentDarkTransformationWindowId = this.darkTransformationWindowIdCounter;
-    this.darkTransformationStartByWindowId.set(
-      this.darkTransformationWindowIdCounter,
-      _event.timestamp,
-    );
+    this.darkTransformationWindowIdCounter = darkTransformationWindowId;
+    this.currentDarkTransformationWindowId = darkTransformationWindowId;
+    this.darkTransformationStartByWindowId.set(darkTransformationWindowId, _event.timestamp);
     this.darkTransformationStartTimestamps.push(_event.timestamp);
     this.dtWindowOpen = true;
     this.maxCasts += 1;
@@ -202,23 +204,22 @@ class SoulReaper extends ExecuteHelper {
 
   private onPlayerDamage(event: DamageEvent) {
     if (this.debuffedTargets.has(event.targetID) && this.isAttributedPlayerDamage(event)) {
-      this.debuffWindowDamage += event.amount + (event.absorbed ?? 0);
+      this.addDebuffWindowDamage(event);
     }
   }
 
   private onPetDamage(event: DamageEvent) {
     if (this.debuffedTargets.has(event.targetID)) {
-      this.debuffWindowDamage += event.amount + (event.absorbed ?? 0);
+      this.addDebuffWindowDamage(event);
     }
   }
 
-  private isAttributedPlayerDamage(event: DamageEvent): boolean {
-    const spellId = event.ability.guid;
+  private addDebuffWindowDamage(event: DamageEvent) {
+    this.debuffWindowDamage += event.amount + (event.absorbed ?? 0);
+  }
 
-    if (spellId === SPELLS.DREAD_PLAGUE.id) {
-      return true;
-    }
-    if (spellId === SPELLS.VIRULENT_PLAGUE.id) {
+  private isAttributedPlayerDamage(event: DamageEvent): boolean {
+    if (ATTRIBUTED_PLAYER_DAMAGE_SPELL_IDS.has(event.ability.guid)) {
       return true;
     }
 
@@ -347,7 +348,8 @@ class SoulReaper extends ExecuteHelper {
           <>
             You used <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> outside{' '}
             <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} /> while Putrefy stacks were
-            available and within 15s of your next Dark Transformation.
+            available from <SpellLink spell={TALENTS.PUTREFY_TALENT} /> and within 15s of your next{' '}
+            <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
           </>
         ),
       };
@@ -358,7 +360,8 @@ class SoulReaper extends ExecuteHelper {
         performance: QualitativePerformance.Fail,
         assessment: (
           <>
-            You used <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> with Putrefy stacks outside{' '}
+            You used <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> with stacks from{' '}
+            <SpellLink spell={TALENTS.PUTREFY_TALENT} /> outside{' '}
             <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
           </>
         ),
@@ -391,6 +394,29 @@ class SoulReaper extends ExecuteHelper {
     return this.getOutsideDarkTransformationAssessment(cast, nextDarkTransformationTimestamp);
   }
 
+  private buildCastStats(
+    windowLabel: string,
+    putrefyStacks: number | '-',
+    putrefyTooltip: JSX.Element = (
+      <>
+        Estimated <SpellLink spell={TALENTS.PUTREFY_TALENT} /> charges available when{' '}
+        <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> was cast.
+      </>
+    ),
+  ) {
+    return [
+      {
+        value: windowLabel,
+        label: 'Window',
+      },
+      {
+        value: putrefyStacks,
+        label: 'Putrefy stacks',
+        tooltip: putrefyTooltip,
+      },
+    ];
+  }
+
   private buildCastDetails(): PerCastData[] {
     const details: { timestamp: number; data: PerCastData }[] = [];
     const firstCastInDarkTransformationWindows = new Set<number>();
@@ -414,17 +440,10 @@ class SoulReaper extends ExecuteHelper {
         data: {
           performance: castAssessment.performance,
           timestamp: this.owner.formatTimestamp(cast.timestamp),
-          stats: [
-            {
-              value: cast.duringDarkTransformation ? 'During DT' : 'Outside DT',
-              label: 'Window',
-            },
-            {
-              value: cast.putrefyChargesAtCast,
-              label: 'Putrefy stacks',
-              tooltip: 'Estimated Putrefy charges available when Soul Reaper was cast.',
-            },
-          ],
+          stats: this.buildCastStats(
+            cast.duringDarkTransformation ? 'During DT' : 'Outside DT',
+            cast.putrefyChargesAtCast,
+          ),
           details: castAssessment.assessment,
         },
       });
@@ -436,17 +455,14 @@ class SoulReaper extends ExecuteHelper {
         data: {
           performance: QualitativePerformance.Fail,
           timestamp: this.owner.formatTimestamp(missedFreeSoulReaperWindow.timestamp),
-          stats: [
-            {
-              value: 'During DT',
-              label: 'Window',
-            },
-            {
-              value: '-',
-              label: 'Putrefy stacks',
-              tooltip: 'No Soul Reaper cast happened in this Dark Transformation window.',
-            },
-          ],
+          stats: this.buildCastStats(
+            'During DT',
+            '-',
+            <>
+              No <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> cast happened in this{' '}
+              <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} /> window.
+            </>,
+          ),
           details: (
             <>
               You did not cast your free <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> during
@@ -480,9 +496,9 @@ class SoulReaper extends ExecuteHelper {
         </p>
         <p>
           Outside <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />, use{' '}
-          <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> only when you do not have Putrefy stacks
-          available and you are not within 15 seconds of your next{' '}
-          <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
+          <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> only when you do not have stacks from{' '}
+          <SpellLink spell={TALENTS.PUTREFY_TALENT} /> available and you are not within 15 seconds
+          of your next <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
         </p>
       </>
     );
@@ -505,7 +521,6 @@ class SoulReaper extends ExecuteHelper {
     const debuffBonus = this.debuffWindowDamage / 6;
     const directDamage = this.executeDamage;
     const totalGain = directDamage + debuffBonus;
-    const executeWindowPercent = this.totalExecuteDuration / this.owner.fightDuration;
 
     return (
       <Statistic
@@ -517,24 +532,14 @@ class SoulReaper extends ExecuteHelper {
           <div>
             <ItemDamageDone amount={totalGain} />
           </div>
-          <div>
-            <small>Breakdown</small>
-          </div>
-          <div>
-            <small>
+          <div style={{ lineHeight: 1.2 }}>
+            <small style={{ display: 'block' }}>Breakdown</small>
+            <small style={{ display: 'block' }}>
               <ItemDamageDone amount={directDamage} displayPercentage={false} /> ability damage
             </small>
-          </div>
-          <div>
-            <small>
+            <small style={{ display: 'block' }}>
               <ItemDamageDone amount={debuffBonus} displayPercentage={false} /> debuff bonus (est.)
             </small>
-          </div>
-          <div>
-            {formatDuration(this.totalExecuteDuration)} <small>execute time</small>
-          </div>
-          <div>
-            {formatPercentage(executeWindowPercent, 1)}% <small>fight in execute</small>
           </div>
           {this.wastedDTWindows > 0 && (
             <div>

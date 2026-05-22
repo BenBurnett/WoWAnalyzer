@@ -186,7 +186,14 @@ class FesteringScythe extends Analyzer {
           details = (
             <>
               Perfect refresh: you refreshed with {remainingSeconds}s left
-              {record.lesserGhoulStacks <= 1 ? ' while at <=1 Lesser Ghoul stack.' : ' (under 3s).'}
+              {record.lesserGhoulStacks <= 1 ? (
+                <>
+                  {' '}
+                  while at &lt;=1 <SpellLink spell={DK_SPELLS.LESSER_GHOUL_BUFF} /> stack.
+                </>
+              ) : (
+                ' (under 3s).'
+              )}
             </>
           );
         } else if ((record.remainingMs ?? 0) < GOOD_REFRESH_WINDOW) {
@@ -234,7 +241,7 @@ class FesteringScythe extends Analyzer {
         <p>
           Aim to maximize uptime while still refreshing efficiently: late refreshes are better than
           early ones, and the best refreshes are in the final seconds of the buff (or when your
-          Lesser Ghoul stack condition is met).
+          <SpellLink spell={DK_SPELLS.LESSER_GHOUL_BUFF} /> stack condition is met).
         </p>
       </>
     );
