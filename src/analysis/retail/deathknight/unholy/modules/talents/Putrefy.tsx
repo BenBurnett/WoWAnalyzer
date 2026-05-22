@@ -3,6 +3,7 @@ import DK_SPELLS from 'common/SPELLS/deathknight';
 import TALENTS from 'common/TALENTS/deathknight';
 import { SpellLink } from 'interface';
 import { explanationAndDataSubsection } from 'interface/guide/components/ExplanationRow';
+import { BoxRowEntry, PerformanceBoxRow } from 'interface/guide/components/PerformanceBoxRow';
 import Analyzer, { Options, SELECTED_PLAYER } from 'parser/core/Analyzer';
 import Events, {
   SummonEvent,
@@ -11,18 +12,27 @@ import Events, {
 } from 'parser/core/Events';
 import BoringSpellValueText from 'parser/ui/BoringSpellValueText';
 import DonutChart from 'parser/ui/DonutChart';
-import GradiatedPerformanceBar from 'interface/guide/components/GradiatedPerformanceBar';
+import { QualitativePerformance } from 'parser/ui/QualitativePerformance';
 import Statistic from 'parser/ui/Statistic';
 import STATISTIC_CATEGORY from 'parser/ui/STATISTIC_CATEGORY';
 import STATISTIC_ORDER from 'parser/ui/STATISTIC_ORDER';
-import type { JSX } from 'react';
+import type { CSSProperties, JSX } from 'react';
 import SpellUsable from '../core/SpellUsable';
+
+const LEGEND_DOT_BASE_STYLE: CSSProperties = {
+  display: 'inline-block',
+  width: '8px',
+  height: '8px',
+  borderRadius: '50%',
+  marginRight: '6px',
+};
 
 class Putrefy extends Analyzer.withDependencies({
   spellUsable: SpellUsable,
 }) {
   private chargesSpentDuringDarkTransformation = 0;
   private chargesSpentOutsideDarkTransformation = 0;
+  private readonly entries: BoxRowEntry[] = [];
 
   constructor(options: Options) {
     super(options);
@@ -55,10 +65,28 @@ class Putrefy extends Analyzer.withDependencies({
 
     if (this.selectedCombatant.hasBuff(DK_SPELLS.DARK_TRANSFORMATION_BUFF)) {
       this.chargesSpentDuringDarkTransformation += 1;
+      this.entries.push({
+        value: QualitativePerformance.Good,
+        tooltip: (
+          <>
+            Spent @ {this.owner.formatTimestamp(event.timestamp)} during{' '}
+            <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />.
+          </>
+        ),
+      });
       return;
     }
 
     this.chargesSpentOutsideDarkTransformation += 1;
+    this.entries.push({
+      value: QualitativePerformance.Fail,
+      tooltip: (
+        <>
+          Spent @ {this.owner.formatTimestamp(event.timestamp)} outside{' '}
+          <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />.
+        </>
+      ),
+    });
   }
 
   private onHarbingerOfDoomLesserGhoulSummon(_event: SummonEvent) {
@@ -95,23 +123,6 @@ class Putrefy extends Analyzer.withDependencies({
   }
 
   get guideSubsection(): JSX.Element {
-    const duringDarkTransformation = {
-      count: this.chargesSpentDuringDarkTransformation,
-      label: (
-        <>
-          During <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />
-        </>
-      ),
-    };
-    const outsideDarkTransformation = {
-      count: this.chargesSpentOutsideDarkTransformation,
-      label: (
-        <>
-          Outside <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />
-        </>
-      ),
-    };
-
     const explanation = (
       <p>
         <strong>
@@ -134,39 +145,28 @@ class Putrefy extends Analyzer.withDependencies({
           <strong>{formatPercentage(this.efficiency, 0)}%</strong> <small>efficiency</small>
         </div>
         <p style={{ margin: '0 0 8px 0' }}>Only use Putrefy charges during Dark Transformation.</p>
-        <div style={{ marginBottom: '8px' }}>
-          <GradiatedPerformanceBar
-            good={duringDarkTransformation}
-            bad={outsideDarkTransformation}
-          />
-        </div>
-        <div style={{ display: 'grid', gap: '2px', marginBottom: '8px' }}>
-          <div>
+        <small style={{ display: 'grid', gap: '2px', marginBottom: '6px' }}>
+          <span>
             <span
               style={{
-                display: 'inline-block',
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                backgroundColor: '#22c55e',
-                marginRight: '6px',
+                ...LEGEND_DOT_BASE_STYLE,
+                backgroundColor: '#4caf50',
               }}
             />
             During <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />
-          </div>
-          <div>
+          </span>
+          <span>
             <span
               style={{
-                display: 'inline-block',
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                backgroundColor: '#ef4444',
-                marginRight: '6px',
+                ...LEGEND_DOT_BASE_STYLE,
+                backgroundColor: '#ef5350',
               }}
             />
             Outside <SpellLink spell={DK_SPELLS.DARK_TRANSFORMATION_BUFF} />
-          </div>
+          </span>
+        </small>
+        <div style={{ marginBottom: '8px' }}>
+          <PerformanceBoxRow values={this.entries} />
         </div>
       </div>
     );

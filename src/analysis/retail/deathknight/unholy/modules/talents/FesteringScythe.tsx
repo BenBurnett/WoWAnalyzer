@@ -2,8 +2,8 @@ import { formatPercentage } from 'common/format';
 import DK_SPELLS from 'common/SPELLS/deathknight';
 import TALENTS from 'common/TALENTS/deathknight';
 import { SpellLink } from 'interface';
+import CastDetail, { type PerCastData } from 'interface/guide/components/CastDetail';
 import { explanationAndDataSubsection } from 'interface/guide/components/ExplanationRow';
-import { BoxRowEntry, PerformanceBoxRow } from 'interface/guide/components/PerformanceBoxRow';
 import Analyzer, { Options, SELECTED_PLAYER } from 'parser/core/Analyzer';
 import Events, { ApplyBuffEvent, RefreshBuffEvent, RemoveBuffEvent } from 'parser/core/Events';
 import { QualitativePerformance } from 'parser/ui/QualitativePerformance';
@@ -11,36 +11,20 @@ import BoringSpellValueText from 'parser/ui/BoringSpellValueText';
 import Statistic from 'parser/ui/Statistic';
 import STATISTIC_CATEGORY from 'parser/ui/STATISTIC_CATEGORY';
 import STATISTIC_ORDER from 'parser/ui/STATISTIC_ORDER';
-import type { CSSProperties, JSX, ReactNode } from 'react';
+import type { JSX } from 'react';
 
 const FESTERING_SCYTHE_BUFF_DURATION = 25_000;
 const PERFECT_REFRESH_WINDOW = 3_000;
 const GOOD_REFRESH_WINDOW = 5_000;
-const LEGEND_DOT_BASE_STYLE: CSSProperties = {
-  display: 'inline-block',
-  width: '8px',
-  height: '8px',
-  borderRadius: '50%',
-  marginRight: '6px',
-};
-const LEGEND_ENTRIES: ReadonlyArray<{ dotStyle: CSSProperties; text: string }> = [
-  {
-    dotStyle: { ...LEGEND_DOT_BASE_STYLE, backgroundColor: '#2ea8ff' },
-    text: 'Refreshed with <3s left or <=1 Lesser Ghoul stack.',
-  },
-  {
-    dotStyle: { ...LEGEND_DOT_BASE_STYLE, backgroundColor: '#4caf50' },
-    text: 'Refreshed with <5s left.',
-  },
-  {
-    dotStyle: { ...LEGEND_DOT_BASE_STYLE, backgroundColor: '#ffca28' },
-    text: 'Refreshed with 5s or more left.',
-  },
-  {
-    dotStyle: { ...LEGEND_DOT_BASE_STYLE, backgroundColor: '#ef5350' },
-    text: 'Buff fell off before reapplying.',
-  },
-];
+
+interface FesteringScytheRecord {
+  timestamp: number;
+  performance: QualitativePerformance;
+  remainingMs?: number;
+  missingMs?: number;
+  lesserGhoulStacks: number;
+  eventType: 'refresh' | 'drop';
+}
 
 class FesteringScythe extends Analyzer {
   private lastBuffRemovedAt: number | null = null;
@@ -50,7 +34,7 @@ class FesteringScythe extends Analyzer {
   private goodRefreshes = 0;
   private droppedApplications = 0;
 
-  private readonly entries: BoxRowEntry[] = [];
+  private readonly records: FesteringScytheRecord[] = [];
 
   private get buffSpellId() {
     return DK_SPELLS.FESTERING_SCYTHE_BUFF.id;
@@ -86,16 +70,13 @@ class FesteringScythe extends Analyzer {
     const missingMs = Math.max(event.timestamp - this.lastBuffRemovedAt, 0);
     const lesserGhoulStacks = this.getLesserGhoulStacksBeforeScythe(event.timestamp);
     this.droppedApplications += 1;
-    this.addEntry(
-      QualitativePerformance.Fail,
-      <>
-        <p style={{ margin: 0 }}>
-          Applied @ {this.owner.formatTimestamp(event.timestamp)} after the buff fell off (
-          {this.formatSeconds(missingMs)}s missing).
-        </p>
-        <p style={{ margin: 0 }}>Lesser Ghoul stacks before Scythe: {lesserGhoulStacks}.</p>
-      </>,
-    );
+    this.records.push({
+      timestamp: event.timestamp,
+      performance: QualitativePerformance.Fail,
+      missingMs,
+      lesserGhoulStacks,
+      eventType: 'drop',
+    });
   }
 
   private onRemoveBuff(event: RemoveBuffEvent) {
@@ -108,16 +89,13 @@ class FesteringScythe extends Analyzer {
     const value = this.getRefreshPerformance(remainingMs, lesserGhoulStacks);
 
     this.refreshCount += 1;
-    this.addEntry(
-      value,
-      <>
-        <p style={{ margin: 0 }}>
-          Refreshed @ {this.owner.formatTimestamp(event.timestamp)} with{' '}
-          {this.formatSeconds(remainingMs)}s remaining.
-        </p>
-        <p style={{ margin: 0 }}>Lesser Ghoul stacks before Scythe: {lesserGhoulStacks}.</p>
-      </>,
-    );
+    this.records.push({
+      timestamp: event.timestamp,
+      performance: value,
+      remainingMs,
+      lesserGhoulStacks,
+      eventType: 'refresh',
+    });
   }
 
   private formatSeconds(durationMs: number) {
@@ -161,10 +139,6 @@ class FesteringScythe extends Analyzer {
     return Math.max(FESTERING_SCYTHE_BUFF_DURATION - (timestamp - previousApplicationTimestamp), 0);
   }
 
-  private addEntry(value: QualitativePerformance, tooltip: ReactNode) {
-    this.entries.push({ value, tooltip });
-  }
-
   private get goodOrPerfectRefreshRate() {
     const trackedRefreshOutcomes = this.refreshCount + this.droppedApplications;
     if (trackedRefreshOutcomes === 0) {
@@ -178,17 +152,72 @@ class FesteringScythe extends Analyzer {
     return this.selectedCombatant.getBuffUptime(this.buffSpellId) / this.owner.fightDuration;
   }
 
-  private renderLegend() {
-    return (
-      <small style={{ display: 'grid', gap: '2px', marginBottom: '6px' }}>
-        {LEGEND_ENTRIES.map((entry) => (
-          <span key={entry.text}>
-            <span style={entry.dotStyle} />
-            {entry.text}
-          </span>
-        ))}
-      </small>
-    );
+  private buildCastDetails(): PerCastData[] {
+    return this.records
+      .slice()
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .map((record) => {
+        if (record.eventType === 'drop') {
+          return {
+            performance: record.performance,
+            timestamp: this.owner.formatTimestamp(record.timestamp),
+            stats: [
+              {
+                value: `${this.formatSeconds(record.missingMs ?? 0)}s`,
+                label: 'Missing time',
+              },
+              {
+                value: record.lesserGhoulStacks,
+                label: 'Lesser Ghoul stacks',
+              },
+            ],
+            details: (
+              <>
+                Bad: <SpellLink spell={DK_SPELLS.FESTERING_SCYTHE_BUFF} /> fell off before you
+                reapplied it. Avoid drops to keep disease haste active.
+              </>
+            ),
+          };
+        }
+
+        const remainingSeconds = this.formatSeconds(record.remainingMs ?? 0);
+        let details: JSX.Element;
+        if ((record.remainingMs ?? 0) < PERFECT_REFRESH_WINDOW || record.lesserGhoulStacks <= 1) {
+          details = (
+            <>
+              Perfect refresh: you refreshed with {remainingSeconds}s left
+              {record.lesserGhoulStacks <= 1 ? ' while at <=1 Lesser Ghoul stack.' : ' (under 3s).'}
+            </>
+          );
+        } else if ((record.remainingMs ?? 0) < GOOD_REFRESH_WINDOW) {
+          details = (
+            <>Good refresh: refreshed in the 3s to 5s window ({remainingSeconds}s remaining).</>
+          );
+        } else {
+          details = (
+            <>
+              Early refresh: refreshed too soon ({remainingSeconds}s remaining). Try to refresh
+              later unless stack conditions force it.
+            </>
+          );
+        }
+
+        return {
+          performance: record.performance,
+          timestamp: this.owner.formatTimestamp(record.timestamp),
+          stats: [
+            {
+              value: `${this.formatSeconds(record.remainingMs ?? 0)}s`,
+              label: 'Remaining duration',
+            },
+            {
+              value: record.lesserGhoulStacks,
+              label: 'Lesser Ghoul stacks',
+            },
+          ],
+          details,
+        };
+      });
   }
 
   get guideSubsection(): JSX.Element {
@@ -229,12 +258,20 @@ class FesteringScythe extends Analyzer {
             <strong>{this.droppedApplications}</strong> <small>buff drops</small>
           </div>
         </div>
-        <small>
+        {/* <small>
           Target high uptime and prioritize good/perfect refreshes over early refreshes. Mouseover
-          boxes for exact timing and stacks.
-        </small>
-        {this.renderLegend()}
-        <PerformanceBoxRow values={this.entries} />
+          entries for exact timing and stacks.
+        </small> */}
+        <CastDetail
+          title="Festering Scythe Timeline"
+          casts={this.buildCastDetails()}
+          filters={[
+            QualitativePerformance.Perfect,
+            QualitativePerformance.Good,
+            QualitativePerformance.Ok,
+            QualitativePerformance.Fail,
+          ]}
+        />
       </div>
     );
 
@@ -247,12 +284,6 @@ class FesteringScythe extends Analyzer {
         position={STATISTIC_ORDER.OPTIONAL(14)}
         size="flexible"
         category={STATISTIC_CATEGORY.TALENTS}
-        dropdown={
-          <div style={{ padding: '8px' }}>
-            {this.renderLegend()}
-            <PerformanceBoxRow values={this.entries} />
-          </div>
-        }
       >
         <BoringSpellValueText spell={DK_SPELLS.FESTERING_SCYTHE_BUFF}>
           <div>
