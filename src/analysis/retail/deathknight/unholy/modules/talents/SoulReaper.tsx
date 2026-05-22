@@ -1,0 +1,551 @@
+import { formatDuration, formatPercentage } from 'common/format';
+import SPELLS from 'common/SPELLS';
+import TALENTS from 'common/TALENTS/deathknight';
+import { SpellLink } from 'interface';
+import CastDetail, { type PerCastData } from 'interface/guide/components/CastDetail';
+import { explanationAndDataSubsection } from 'interface/guide/components/ExplanationRow';
+import { Options, SELECTED_PLAYER, SELECTED_PLAYER_PET } from 'parser/core/Analyzer';
+import Events, {
+  ApplyBuffEvent,
+  ApplyDebuffEvent,
+  CastEvent,
+  DamageEvent,
+  FightEndEvent,
+  RemoveBuffEvent,
+  RemoveDebuffEvent,
+  UpdateSpellUsableEvent,
+  UpdateSpellUsableType,
+} from 'parser/core/Events';
+import ExecuteHelper from 'parser/shared/modules/helpers/ExecuteHelper';
+import { QualitativePerformance } from 'parser/ui/QualitativePerformance';
+import BoringSpellValueText from 'parser/ui/BoringSpellValueText';
+import ItemDamageDone from 'parser/ui/ItemDamageDone';
+import Statistic from 'parser/ui/Statistic';
+import STATISTIC_CATEGORY from 'parser/ui/STATISTIC_CATEGORY';
+import STATISTIC_ORDER from 'parser/ui/STATISTIC_ORDER';
+import type { JSX } from 'react';
+
+const SOUL_REAPER_EXECUTE_THRESHOLD = 0.35;
+const SOUL_REAPER_COOLDOWN_MS = 15_000;
+const SOUL_REAPER_NEXT_DT_BAD_WINDOW_MS = 15_000;
+
+interface SoulReaperCastRecord {
+  timestamp: number;
+  duringDarkTransformation: boolean;
+  darkTransformationWindowId: number | null;
+  putrefyChargesAtCast: number;
+}
+
+interface MissedFreeSoulReaperRecord {
+  timestamp: number;
+  darkTransformationWindowId: number;
+}
+
+class SoulReaper extends ExecuteHelper {
+  public static readonly executeSources = SELECTED_PLAYER;
+  public static readonly lowerThreshold = SOUL_REAPER_EXECUTE_THRESHOLD;
+  public static readonly executeSpells = [TALENTS.SOUL_REAPER_TALENT];
+  public static readonly countCooldownAsExecuteTime = false;
+
+  maxCasts = 0;
+
+  /**
+   * Targets currently carrying Dread Plague.  Execute-window tracking is
+   * restricted to these targets so that trash adds (which never have Dread
+   * Plague applied by the player) do not inflate the execute duration.
+   */
+  private readonly drPlaguedTargets = new Set<number>();
+
+  private darkTransformationActive = false;
+  private dtWindowOpen = false;
+  private wastedDTWindows = 0;
+  private debuffWindowDamage = 0;
+  private currentDarkTransformationWindowId: number | null = null;
+  private darkTransformationWindowIdCounter = 0;
+  private readonly darkTransformationStartTimestamps: number[] = [];
+  private readonly darkTransformationStartByWindowId = new Map<number, number>();
+  private putrefyChargesAvailable = 0;
+  private readonly soulReaperCasts: SoulReaperCastRecord[] = [];
+  private readonly missedFreeSoulReaperWindows: MissedFreeSoulReaperRecord[] = [];
+  private readonly debuffedTargets = new Set<number>();
+
+  constructor(options: Options) {
+    super(options);
+
+    this.active = this.selectedCombatant.hasTalent(TALENTS.SOUL_REAPER_TALENT);
+    if (!this.active) {
+      return;
+    }
+
+    if (this.selectedCombatant.hasTalent(TALENTS.PUTREFY_TALENT)) {
+      this.putrefyChargesAvailable = this.selectedCombatant.hasTalent(TALENTS.PUTRID_ECHOES_TALENT)
+        ? 2
+        : 1;
+    }
+
+    // Dread Plague presence is our "this target matters" signal for execute
+    // window tracking (see isTargetInHealthExecuteWindow override below).
+    this.addEventListener(
+      Events.applydebuff.by(SELECTED_PLAYER).spell(SPELLS.DREAD_PLAGUE),
+      this.onDrPlagueApply,
+    );
+    this.addEventListener(
+      Events.removedebuff.by(SELECTED_PLAYER).spell(SPELLS.DREAD_PLAGUE),
+      this.onDrPlagueRemove,
+    );
+
+    // Dark Transformation window tracking — DT resets SR's cooldown and allows
+    // one free cast on any target; the SpellUsable subclass handles the CD reset.
+    this.addEventListener(
+      Events.applybuff.by(SELECTED_PLAYER).spell(SPELLS.DARK_TRANSFORMATION_BUFF),
+      this.onDTApply,
+    );
+    this.addEventListener(
+      Events.removebuff.by(SELECTED_PLAYER).spell(SPELLS.DARK_TRANSFORMATION_BUFF),
+      this.onDTRemove,
+    );
+    this.addEventListener(
+      Events.cast.by(SELECTED_PLAYER).spell(TALENTS.SOUL_REAPER_TALENT),
+      this.onSRCast,
+    );
+    this.addEventListener(
+      Events.UpdateSpellUsable.by(SELECTED_PLAYER).spell(TALENTS.PUTREFY_TALENT),
+      this.onPutrefyCooldownUpdate,
+    );
+
+    // Debuff application/removal on targets
+    this.addEventListener(
+      Events.applydebuff.by(SELECTED_PLAYER).spell(SPELLS.SOUL_REAPER_DEBUFF),
+      this.onDebuffApply,
+    );
+    this.addEventListener(
+      Events.removedebuff.by(SELECTED_PLAYER).spell(SPELLS.SOUL_REAPER_DEBUFF),
+      this.onDebuffRemove,
+    );
+
+    // Caster-only sources for debuff attribution.
+    this.addEventListener(Events.damage.by(SELECTED_PLAYER), this.onPlayerDamage);
+
+    // Include all pet damage in debuff attribution.
+    this.addEventListener(Events.damage.by(SELECTED_PLAYER_PET), this.onPetDamage);
+  }
+
+  /**
+   * Only consider a target "in execute range" for maxCasts purposes if the
+   * player has Dread Plague applied to it.  This keeps trash adds — which may
+   * spend their whole life below 35% HP — from inflating the execute window.
+   */
+  isTargetInHealthExecuteWindow(event: DamageEvent): boolean {
+    if (!this.drPlaguedTargets.has(event.targetID)) {
+      return false;
+    }
+    return super.isTargetInHealthExecuteWindow(event);
+  }
+
+  private onDrPlagueApply(event: ApplyDebuffEvent) {
+    this.drPlaguedTargets.add(event.targetID);
+  }
+
+  private onDrPlagueRemove(event: RemoveDebuffEvent) {
+    this.drPlaguedTargets.delete(event.targetID);
+  }
+
+  private onDTApply(_event: ApplyBuffEvent) {
+    this.darkTransformationActive = true;
+    this.darkTransformationWindowIdCounter += 1;
+    this.currentDarkTransformationWindowId = this.darkTransformationWindowIdCounter;
+    this.darkTransformationStartByWindowId.set(
+      this.darkTransformationWindowIdCounter,
+      _event.timestamp,
+    );
+    this.darkTransformationStartTimestamps.push(_event.timestamp);
+    this.dtWindowOpen = true;
+    this.maxCasts += 1;
+  }
+
+  private onDTRemove(event: RemoveBuffEvent) {
+    this.darkTransformationActive = false;
+    this.closeDarkTransformationWindow(event.timestamp);
+  }
+
+  private onSRCast(event: CastEvent) {
+    this.soulReaperCasts.push({
+      timestamp: event.timestamp,
+      duringDarkTransformation: this.darkTransformationActive,
+      darkTransformationWindowId: this.currentDarkTransformationWindowId,
+      putrefyChargesAtCast: this.putrefyChargesAvailable,
+    });
+
+    if (this.dtWindowOpen) {
+      this.dtWindowOpen = false;
+    }
+  }
+
+  private onPutrefyCooldownUpdate(event: UpdateSpellUsableEvent) {
+    if (
+      event.updateType === UpdateSpellUsableType.BeginCooldown ||
+      event.updateType === UpdateSpellUsableType.EndCooldown ||
+      event.updateType === UpdateSpellUsableType.UseCharge ||
+      event.updateType === UpdateSpellUsableType.RestoreCharge
+    ) {
+      this.putrefyChargesAvailable = event.chargesAvailable;
+    }
+  }
+
+  private onDebuffApply(event: ApplyDebuffEvent) {
+    this.debuffedTargets.add(event.targetID);
+  }
+
+  private onDebuffRemove(event: RemoveDebuffEvent) {
+    this.debuffedTargets.delete(event.targetID);
+  }
+
+  private onPlayerDamage(event: DamageEvent) {
+    if (this.debuffedTargets.has(event.targetID) && this.isAttributedPlayerDamage(event)) {
+      this.debuffWindowDamage += event.amount + (event.absorbed ?? 0);
+    }
+  }
+
+  private onPetDamage(event: DamageEvent) {
+    if (this.debuffedTargets.has(event.targetID)) {
+      this.debuffWindowDamage += event.amount + (event.absorbed ?? 0);
+    }
+  }
+
+  private isAttributedPlayerDamage(event: DamageEvent): boolean {
+    const spellId = event.ability.guid;
+
+    if (spellId === SPELLS.DREAD_PLAGUE.id) {
+      return true;
+    }
+    if (spellId === SPELLS.VIRULENT_PLAGUE.id) {
+      return true;
+    }
+
+    // Putrefy can appear with multiple damage IDs; match by spell name.
+    return event.ability.name === TALENTS.PUTREFY_TALENT.name;
+  }
+
+  private closeDarkTransformationWindow(fallbackTimestamp: number) {
+    const darkTransformationWindowId = this.currentDarkTransformationWindowId;
+    this.currentDarkTransformationWindowId = null;
+    if (!this.dtWindowOpen || darkTransformationWindowId === null) {
+      return;
+    }
+
+    this.missedFreeSoulReaperWindows.push({
+      darkTransformationWindowId,
+      timestamp:
+        this.darkTransformationStartByWindowId.get(darkTransformationWindowId) ?? fallbackTimestamp,
+    });
+    this.wastedDTWindows += 1;
+    this.dtWindowOpen = false;
+  }
+
+  private isTimestampDuringExecute(timestamp: number): boolean {
+    return this.executeRanges.some(
+      (range) => range.startEvent.timestamp <= timestamp && timestamp <= range.endEvent.timestamp,
+    );
+  }
+
+  private getFreeDarkTransformationCastsDuringExecute(): number {
+    const countedWindows = new Set<number>();
+
+    for (const cast of this.soulReaperCasts) {
+      if (!cast.duringDarkTransformation || cast.darkTransformationWindowId === null) {
+        continue;
+      }
+
+      if (countedWindows.has(cast.darkTransformationWindowId)) {
+        continue;
+      }
+
+      if (!this.isTimestampDuringExecute(cast.timestamp)) {
+        continue;
+      }
+
+      countedWindows.add(cast.darkTransformationWindowId);
+    }
+
+    return countedWindows.size;
+  }
+
+  onFightEnd(event: FightEndEvent) {
+    super.onFightEnd(event);
+    this.maxCasts += Math.ceil(this.totalExecuteDuration / SOUL_REAPER_COOLDOWN_MS);
+    this.maxCasts -= this.getFreeDarkTransformationCastsDuringExecute();
+    this.darkTransformationActive = false;
+    this.closeDarkTransformationWindow(event.timestamp);
+  }
+
+  private getNextDarkTransformationTimestamp(
+    castTimestamp: number,
+    nextDarkTransformationIndex: number,
+  ): { nextDarkTransformationIndex: number; nextDarkTransformationTimestamp: number | null } {
+    let nextIndex = nextDarkTransformationIndex;
+    while (
+      nextIndex < this.darkTransformationStartTimestamps.length &&
+      this.darkTransformationStartTimestamps[nextIndex] <= castTimestamp
+    ) {
+      nextIndex += 1;
+    }
+
+    return {
+      nextDarkTransformationIndex: nextIndex,
+      nextDarkTransformationTimestamp: this.darkTransformationStartTimestamps[nextIndex] ?? null,
+    };
+  }
+
+  private getDarkTransformationAssessment(
+    darkTransformationWindowId: number,
+    firstCastInDarkTransformationWindows: Set<number>,
+  ): { performance: QualitativePerformance; assessment: JSX.Element } {
+    const firstCastInWindow = !firstCastInDarkTransformationWindows.has(darkTransformationWindowId);
+    firstCastInDarkTransformationWindows.add(darkTransformationWindowId);
+
+    return {
+      performance: QualitativePerformance.Good,
+      assessment: firstCastInWindow ? (
+        <>
+          You used your free <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> during{' '}
+          <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
+        </>
+      ) : (
+        <>
+          You used <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> on cooldown during{' '}
+          <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
+        </>
+      ),
+    };
+  }
+
+  private getOutsideDarkTransformationAssessment(
+    cast: SoulReaperCastRecord,
+    nextDarkTransformationTimestamp: number | null,
+  ): { performance: QualitativePerformance; assessment: JSX.Element } {
+    const usedWithinNextDarkTransformationWindow =
+      nextDarkTransformationTimestamp !== null &&
+      nextDarkTransformationTimestamp - cast.timestamp <= SOUL_REAPER_NEXT_DT_BAD_WINDOW_MS;
+    const usedWithPutrefyStacks = cast.putrefyChargesAtCast > 0;
+
+    if (!usedWithPutrefyStacks && !usedWithinNextDarkTransformationWindow) {
+      return {
+        performance: QualitativePerformance.Good,
+        assessment: (
+          <>
+            You used <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> without Putrefy stacks outside{' '}
+            <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
+          </>
+        ),
+      };
+    }
+
+    if (usedWithPutrefyStacks && usedWithinNextDarkTransformationWindow) {
+      return {
+        performance: QualitativePerformance.Fail,
+        assessment: (
+          <>
+            You used <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> outside{' '}
+            <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} /> while Putrefy stacks were
+            available and within 15s of your next Dark Transformation.
+          </>
+        ),
+      };
+    }
+
+    if (usedWithPutrefyStacks) {
+      return {
+        performance: QualitativePerformance.Fail,
+        assessment: (
+          <>
+            You used <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> with Putrefy stacks outside{' '}
+            <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
+          </>
+        ),
+      };
+    }
+
+    return {
+      performance: QualitativePerformance.Fail,
+      assessment: (
+        <>
+          You used <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> within 15s of your next{' '}
+          <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
+        </>
+      ),
+    };
+  }
+
+  private getCastAssessment(
+    cast: SoulReaperCastRecord,
+    firstCastInDarkTransformationWindows: Set<number>,
+    nextDarkTransformationTimestamp: number | null,
+  ): { performance: QualitativePerformance; assessment: JSX.Element } {
+    if (cast.duringDarkTransformation && cast.darkTransformationWindowId !== null) {
+      return this.getDarkTransformationAssessment(
+        cast.darkTransformationWindowId,
+        firstCastInDarkTransformationWindows,
+      );
+    }
+
+    return this.getOutsideDarkTransformationAssessment(cast, nextDarkTransformationTimestamp);
+  }
+
+  private buildCastDetails(): PerCastData[] {
+    const details: { timestamp: number; data: PerCastData }[] = [];
+    const firstCastInDarkTransformationWindows = new Set<number>();
+
+    let nextDarkTransformationIndex = 0;
+    for (const cast of this.soulReaperCasts) {
+      const darkTransformationContext = this.getNextDarkTransformationTimestamp(
+        cast.timestamp,
+        nextDarkTransformationIndex,
+      );
+      nextDarkTransformationIndex = darkTransformationContext.nextDarkTransformationIndex;
+
+      const castAssessment = this.getCastAssessment(
+        cast,
+        firstCastInDarkTransformationWindows,
+        darkTransformationContext.nextDarkTransformationTimestamp,
+      );
+
+      details.push({
+        timestamp: cast.timestamp,
+        data: {
+          performance: castAssessment.performance,
+          timestamp: this.owner.formatTimestamp(cast.timestamp),
+          stats: [
+            {
+              value: cast.duringDarkTransformation ? 'During DT' : 'Outside DT',
+              label: 'Window',
+            },
+            {
+              value: cast.putrefyChargesAtCast,
+              label: 'Putrefy stacks',
+              tooltip: 'Estimated Putrefy charges available when Soul Reaper was cast.',
+            },
+          ],
+          details: castAssessment.assessment,
+        },
+      });
+    }
+
+    for (const missedFreeSoulReaperWindow of this.missedFreeSoulReaperWindows) {
+      details.push({
+        timestamp: missedFreeSoulReaperWindow.timestamp,
+        data: {
+          performance: QualitativePerformance.Fail,
+          timestamp: this.owner.formatTimestamp(missedFreeSoulReaperWindow.timestamp),
+          stats: [
+            {
+              value: 'During DT',
+              label: 'Window',
+            },
+            {
+              value: '-',
+              label: 'Putrefy stacks',
+              tooltip: 'No Soul Reaper cast happened in this Dark Transformation window.',
+            },
+          ],
+          details: (
+            <>
+              You did not cast your free <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> during
+              this <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} /> window.
+            </>
+          ),
+        },
+      });
+    }
+
+    details.sort((a, b) => a.timestamp - b.timestamp);
+
+    return details.map((entry) => entry.data);
+  }
+
+  get guideSubsection(): JSX.Element {
+    const explanation = (
+      <>
+        <p>
+          <strong>
+            <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} />
+          </strong>{' '}
+          should be prioritized during <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} /> and
+          managed carefully outside of it.
+        </p>
+        <p>
+          During each <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} /> window, always spend the
+          free <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> cast, then continue using{' '}
+          <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> on cooldown while the window remains
+          active.
+        </p>
+        <p>
+          Outside <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />, use{' '}
+          <SpellLink spell={TALENTS.SOUL_REAPER_TALENT} /> only when you do not have Putrefy stacks
+          available and you are not within 15 seconds of your next{' '}
+          <SpellLink spell={SPELLS.DARK_TRANSFORMATION_BUFF} />.
+        </p>
+      </>
+    );
+
+    const data = (
+      <CastDetail
+        title="Soul Reaper Casts"
+        casts={this.buildCastDetails()}
+        filters={[QualitativePerformance.Good, QualitativePerformance.Fail]}
+      />
+    );
+
+    return explanationAndDataSubsection(explanation, data, 40);
+  }
+
+  statistic() {
+    // The SOUL_REAPER_DEBUFF amplifies all player damage to that target by 20%.
+    // Combat logs already include this amplification, so the "extra" damage is:
+    //   bonus = amplified - base = 1.2x - x = 0.2x = amplified / 6
+    const debuffBonus = this.debuffWindowDamage / 6;
+    const directDamage = this.executeDamage;
+    const totalGain = directDamage + debuffBonus;
+    const executeWindowPercent = this.totalExecuteDuration / this.owner.fightDuration;
+
+    return (
+      <Statistic
+        position={STATISTIC_ORDER.OPTIONAL(30)}
+        size="flexible"
+        category={STATISTIC_CATEGORY.TALENTS}
+      >
+        <BoringSpellValueText spell={TALENTS.SOUL_REAPER_TALENT}>
+          <div>
+            <ItemDamageDone amount={totalGain} />
+          </div>
+          <div>
+            <small>Breakdown</small>
+          </div>
+          <div>
+            <small>
+              <ItemDamageDone amount={directDamage} displayPercentage={false} /> ability damage
+            </small>
+          </div>
+          <div>
+            <small>
+              <ItemDamageDone amount={debuffBonus} displayPercentage={false} /> debuff bonus (est.)
+            </small>
+          </div>
+          <div>
+            {formatDuration(this.totalExecuteDuration)} <small>execute time</small>
+          </div>
+          <div>
+            {formatPercentage(executeWindowPercent, 1)}% <small>fight in execute</small>
+          </div>
+          {this.wastedDTWindows > 0 && (
+            <div>
+              <span style={{ color: 'red' }}>{this.wastedDTWindows}</span>{' '}
+              <small>wasted Dark Transformation window{this.wastedDTWindows > 1 ? 's' : ''}</small>
+            </div>
+          )}
+        </BoringSpellValueText>
+      </Statistic>
+    );
+  }
+}
+
+export default SoulReaper;

@@ -60,6 +60,8 @@ interface CastDetailProps {
   casts: PerCastData[];
   /** Optional description text shown below the title */
   description?: string;
+  /** Optional performance filters to display. Defaults to all performance levels. */
+  filters?: QualitativePerformance[];
 }
 
 const PERF_LEVELS = [
@@ -78,16 +80,26 @@ const PERF_LEVELS = [
  * @param casts - Array of per-cast data to display
  * @param description - Optional description text shown below the title
  */
-export default function CastDetail({ title, casts, description }: CastDetailProps) {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [performanceFilter, setPerformanceFilter] = useState<Set<QualitativePerformance>>(
+export default function CastDetail({
+  title,
+  casts,
+  description,
+  filters,
+}: Readonly<CastDetailProps>) {
+  const availableFilters = useMemo(
     () =>
-      new Set([
+      filters ?? [
         QualitativePerformance.Perfect,
         QualitativePerformance.Good,
         QualitativePerformance.Ok,
         QualitativePerformance.Fail,
-      ]),
+      ],
+    [filters],
+  );
+
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [performanceFilter, setPerformanceFilter] = useState<Set<QualitativePerformance>>(
+    () => new Set(availableFilters),
   );
 
   const filteredCasts = useMemo(() => {
@@ -165,7 +177,7 @@ export default function CastDetail({ title, casts, description }: CastDetailProp
 
   const statsContent = (
     <PerfBadgeGrid>
-      {PERF_LEVELS.map(({ perf, label }) => {
+      {PERF_LEVELS.filter(({ perf }) => availableFilters.includes(perf)).map(({ perf, label }) => {
         const count = performanceCounts[perf] ?? 0;
         const disabled = count === 0;
         const color = disabled ? '#c8c8c8' : qualitativePerformanceToColor(perf);
@@ -175,7 +187,7 @@ export default function CastDetail({ title, casts, description }: CastDetailProp
             color={color}
             active={!disabled && performanceFilter.has(perf)}
             disabled={disabled}
-            onClick={!disabled ? () => togglePerformanceFilter(perf) : undefined}
+            onClick={disabled ? undefined : () => togglePerformanceFilter(perf)}
           >
             <PerfBadgeCount color={color}>{count}</PerfBadgeCount>
             <PerfBadgeDivider color={color} />
@@ -227,7 +239,7 @@ export default function CastDetail({ title, casts, description }: CastDetailProp
                   ? cast.tooltip
                   : `Cast #${index} · ${cast.timestamp} · ${cast.performance}`;
                 return (
-                  <Tooltip key={idx} content={content}>
+                  <Tooltip key={`${cast.timestamp}-${index}-${cast.performance}`} content={content}>
                     <TimelineRect
                       style={{ width: `calc(${rectWidthPct}% - 3px)` }}
                       color={qualitativePerformanceToColor(cast.performance)}
@@ -267,7 +279,10 @@ export default function CastDetail({ title, casts, description }: CastDetailProp
                   ? qualitativePerformanceToColor(stat.performance)
                   : castColor;
                 return (
-                  <Tooltip key={statIdx} content={stat.tooltip}>
+                  <Tooltip
+                    key={`${currentCast!.timestamp}-${stat.label}-${String(stat.value)}-${statIdx}`}
+                    content={stat.tooltip}
+                  >
                     <StatCard color={statColor}>
                       <StatCardValue color={statColor}>{stat.value}</StatCardValue>
                       <StatCardDivider color={statColor} />
@@ -292,7 +307,7 @@ export default function CastDetail({ title, casts, description }: CastDetailProp
             {currentCast!.details && (
               <PerformanceTipBox
                 performance={currentCast!.performance}
-                icon={currentCast!.detailsIcon !== undefined ? currentCast!.detailsIcon : undefined}
+                icon={currentCast!.detailsIcon === undefined ? undefined : currentCast!.detailsIcon}
               >
                 {currentCast!.details}
               </PerformanceTipBox>
