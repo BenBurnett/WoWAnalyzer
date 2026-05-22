@@ -1,5 +1,6 @@
 import { formatPercentage } from 'common/format';
 import SPELLS from 'common/SPELLS';
+import TALENTS from 'common/TALENTS/deathknight';
 import { SpellLink } from 'interface';
 import { explanationAndDataSubsection } from 'interface/guide/components/ExplanationRow';
 import UptimeIcon from 'interface/icons/Uptime';
@@ -27,11 +28,20 @@ class PlagueEfficiency extends Analyzer {
 
   get guideSubsection(): JSX.Element {
     const explanation = (
-      <p>
-        Keep <SpellLink spell={SPELLS.VIRULENT_PLAGUE} /> and{' '}
-        <SpellLink spell={SPELLS.DREAD_PLAGUE} /> active for as much of the fight as possible. High
-        disease uptime is a core part of Unholy pressure and smooth target maintenance.
-      </p>
+      <>
+        <p>
+          Keep <SpellLink spell={SPELLS.VIRULENT_PLAGUE} /> and{' '}
+          <SpellLink spell={SPELLS.DREAD_PLAGUE} /> active for as much of the fight as possible.
+          Strong disease uptime is core to Unholy pressure and feeds several talent interactions.
+        </p>
+        <p>
+          With <SpellLink spell={TALENTS.FORBIDDEN_KNOWLEDGE_3_UNHOLY_TALENT} />,{' '}
+          <SpellLink spell={SPELLS.DREAD_PLAGUE} /> can rouse additional lesser ghouls to{' '}
+          <SpellLink spell={TALENTS.PUTREFY_TALENT} />. With{' '}
+          <SpellLink spell={TALENTS.SUDDEN_DOOM_TALENT} />, keeping{' '}
+          <SpellLink spell={SPELLS.DREAD_PLAGUE} /> active also sustains that proc engine.
+        </p>
+      </>
     );
 
     const data = (
